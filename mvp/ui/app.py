@@ -90,6 +90,12 @@ def visual_search(positive_files, negative_files, gender_filter, face_weight, ha
     # 2. Build Target
     target = aggregator.build_target_profile(pos_profiles, neg_profiles)
     
+    # Build Negative Target explicitly for Ranker exclusion
+    negative_target = None
+    if neg_profiles:
+        # treat neg_profiles as "positives" for the purpose of building a representation of what to avoid
+        negative_target = aggregator.build_target_profile(neg_profiles, [])
+
     # 3. Construct Weights
     # We construct a dictionary to override specific fields based on multipliers
     weights = {}
@@ -138,7 +144,7 @@ def visual_search(positive_files, negative_files, gender_filter, face_weight, ha
         
     results = []
     for cand in candidates:
-        score = ranker.score_candidate(target, cand, weights=weights)
+        score = ranker.score_candidate(target, cand, weights=weights, negative_target=negative_target)
         results.append((cand, score))
         
     results.sort(key=lambda x: x[1], reverse=True)

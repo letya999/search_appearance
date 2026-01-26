@@ -99,6 +99,10 @@ async def search_profiles(req: SearchRequest):
 
     target_profile = aggregator.build_target_profile(positives, negatives)
     
+    negative_target_profile = None
+    if negatives:
+        negative_target_profile = aggregator.build_target_profile(negatives, [])
+    
     # Apply hard filters if any
     candidates = all_profiles
     if req.hard_filters:
@@ -110,7 +114,7 @@ async def search_profiles(req: SearchRequest):
         if cand.id in req.positive_ids or cand.id in req.negative_ids:
             continue
             
-        score = ranker.score_candidate(target_profile, cand, weights=req.weights)
+        score = ranker.score_candidate(target_profile, cand, weights=req.weights, negative_target=negative_target_profile)
         scored_results.append((cand, score))
         
     # Sort

@@ -1,4 +1,4 @@
-from typing import Dict, Any, Type
+from typing import Dict, Any, Type, List, Optional
 from mvp.schema.models import PhotoProfile
 from mvp.core.similarity import calculate_single_sim
 # Import all enums to ensure they are registered/available if needed, 
@@ -32,10 +32,11 @@ class Ranker:
         "vibe.vibe": 0.5
     }
 
-    def score_candidate(self, target: PhotoProfile, candidate: PhotoProfile, weights: Dict[str, float] = None) -> float:
+    def score_candidate(self, target: PhotoProfile, candidate: PhotoProfile, weights: Dict[str, float] = None, negative_target: Optional[PhotoProfile] = None) -> float:
         """
         Calculates a weighted similarity score between a target profile and a candidate.
         Returns visual similarity on scale 0.0 to 1.0.
+        If negative_target is provided, subtracts its similarity from the score.
         """
         final_weights = self.DEFAULT_WEIGHTS.copy()
         if weights:
@@ -44,6 +45,7 @@ class Ranker:
         total_score = 0.0
         total_weight = 0.0
         
+        # Calculate positive similarity
         categories = ["basic", "face", "hair", "extra", "vibe"]
         
         for cat_name in categories:
@@ -61,8 +63,6 @@ class Ranker:
                 if not t_attr or not t_attr.value:
                     continue
                 if not c_attr or not c_attr.value:
-                    # If candidate is missing data, we can ignore or penalize. 
-                    # Ignoring is safer for sparse data.
                     continue
                     
                 # Get weight
@@ -70,7 +70,6 @@ class Ranker:
                 w = final_weights.get(key, 1.0)
                 
                 # Determine Enum Class for Distance Matrix lookup
-                # t_attr.value should be an enum member e.g. HairColor.BLONDE
                 enum_type = type(t_attr.value)
                 
                 # Calculate Similarity
@@ -82,11 +81,54 @@ class Ranker:
                 
                 total_score += sim * w
                 total_weight += w
-                
+
         if total_weight == 0:
             return 0.0
             
-        return total_score / total_weight
+        base_score = total_score / total_weight
+        
+        if not negative_target:
+            return base_score
+            
+        # Calculate negative similarity
+        neg_score_sum = 0.0
+        neg_weight_sum = 0.0
+        
+        for cat_name in categories:
+            n_cat = getattr(negative_target, cat_name, None)
+            c_cat = getattr(candidate, cat_name, None)
+            
+            if not n_cat or not c_cat: continue
+            
+            for field_name in n_cat.model_fields.keys():
+                n_attr = getattr(n_cat, field_name)
+                c_attr = getattr(c_cat, field_name)
+                
+                if not n_attr or not n_attr.value: continue
+                if not c_attr or not c_attr.value: continue
+                
+                key = f"{cat_name}.{field_name}"
+                w = final_weights.get(key, 1.0)
+                
+                enum_type = type(n_attr.value)
+                
+                sim = calculate_single_sim(
+                    n_attr.value, n_attr.confidence,
+                    c_attr.value, c_attr.confidence,
+                    enum_type
+                )
+                
+                neg_score_sum += sim * w
+                neg_weight_sum += w
+        
+        neg_penalty = 0.0
+        if neg_weight_sum > 0:
+            neg_similarity = neg_score_sum / neg_weight_sum
+            # Penalty Factor: How much we punish similarity to negative.
+            # 0.5 means if it's 100% like negative, we subtract 0.5 from score.
+            neg_penalty = neg_similarity * 0.5 
+            
+        return max(0.0, base_score - neg_penalty)
 
     def filter_candidates(self, candidates: List[PhotoProfile], criteria: Dict[str, Any]) -> List[PhotoProfile]:
         """
