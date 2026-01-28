@@ -15,7 +15,11 @@ from mvp.annotator.client import VLMClient
 from mvp.annotator.prompts import SYSTEM_PROMPT
 from mvp.search.aggregator import ProfileAggregator
 from mvp.search.ranker import Ranker
+from mvp.search.ranker import Ranker
 from mvp.core.embedder import ImageEmbedder
+
+from mvp.storage.database import create_db_and_tables
+from mvp.api.routes.collections import router as collections_router
 
 # Configuration
 DATA_DIR = Path("data")
@@ -38,6 +42,9 @@ state = AppState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Load DB and Init Client
+    print("Initializing Database...")
+    create_db_and_tables()
+    
     print("Loading database...")
     if METADATA_FILE.exists():
         with open(METADATA_FILE, 'r') as f:
@@ -80,6 +87,7 @@ async def lifespan(app: FastAPI):
     pass
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(collections_router, prefix="/api")
 
 # CORS
 app.add_middleware(

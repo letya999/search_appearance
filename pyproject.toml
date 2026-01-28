@@ -21,6 +21,9 @@ dependencies = [
     "anthropic>=0.39.0",
     "google-generativeai>=0.8.0",
     "pyyaml>=6.0.0",
+    "sqlmodel>=0.0.31",
+    "lancedb>=0.27.1",
+    "alembic>=1.18.1",
 ]
 
 [tool.setuptools]

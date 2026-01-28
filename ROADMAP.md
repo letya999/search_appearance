@@ -60,7 +60,7 @@ mvp/
 ## 📋 Этап 2: Пользовательская база данных
 
 ### 2.1 Выбор хранилища
-- [ ] **SQLite + LanceDB** для MVP
+- [x] **SQLite + LanceDB** для MVP
   - SQLite: метаданные, пользователи, сессии
   - LanceDB: векторные эмбеддинги (локальный, простой)
 - [ ] Миграции через Alembic
@@ -100,10 +100,10 @@ class SearchSession(SQLModel):
 ```
 
 ### 2.3 API для коллекций
-- [ ] `POST /collections` — создать коллекцию
-- [ ] `POST /collections/{id}/photos` — добавить фото
-- [ ] `GET /collections/{id}/stats` — статистика
-- [ ] `DELETE /collections/{id}` — удалить
+- [x] `POST /collections` — создать коллекцию
+- [x] `POST /collections/{id}/photos` — добавить фото
+- [x] `GET /collections/{id}/stats` — статистика
+- [x] `DELETE /collections/{id}` — удалить
 
 **Результат:** Пользователи могут загружать свои базы фото.
 
@@ -112,7 +112,7 @@ class SearchSession(SQLModel):
 ## 📋 Этап 3: Конструктор атрибутов (Custom Schema)
 
 ### 3.1 Dynamic Attributes
-- [ ] `mvp/schema/dynamic_schema.py`
+- [x] `mvp/schema/dynamic_schema.py`
   ```python
   class CustomAttribute:
       name: str
