@@ -15,6 +15,7 @@ from mvp.annotator.client import VLMClient
 from mvp.annotator.prompts import SYSTEM_PROMPT
 from mvp.search.aggregator import ProfileAggregator
 from mvp.search.ranker import Ranker
+from mvp.core.embedder import ImageEmbedder
 
 # Configuration
 DATA_DIR = Path("data")
@@ -27,6 +28,10 @@ class AppState:
     vlm_client: Optional[VLMClient] = None
     ranker: Ranker = Ranker()
     aggregator: ProfileAggregator = ProfileAggregator()
+    embedder: Optional[ImageEmbedder] = None
+    # Store session/active embeddings to prevent duplicates.
+    # List of (id, embedding)
+    session_embeddings: List[tuple] = []
 
 state = AppState()
 
@@ -62,6 +67,13 @@ async def lifespan(app: FastAPI):
         print("VLM Client initialized.")
     except Exception as e:
         print(f"WARNING: VLM Client failed to init: {e}")
+
+    # Init Embedder
+    try:
+        state.embedder = ImageEmbedder()
+        print("Image Embedder initialized.")
+    except Exception as e:
+        print(f"WARNING: Embedder failed to init: {e}")
 
     yield
     # Shutdown
@@ -120,9 +132,22 @@ async def analyze_upload(file: UploadFile) -> PhotoProfile:
         f.write(content)
         
     try:
-        # Analyze
+        # 1. Calculate Embedding & Check Duplicates (Fast/Cheap)
+        embedding: Optional[List[float]] = None
+        if state.embedder:
+            embedding = state.embedder.encode_image(str(temp_path))
+            
+            if embedding:
+                for existing_id, existing_emb in state.session_embeddings:
+                    sim = state.embedder.cosine_similarity(embedding, existing_emb)
+                    if sim > 0.9:
+                        print(f"Duplicate detected: {file.filename} is similar to {existing_id} ({sim:.4f})")
+                        raise HTTPException(status_code=400, detail=f"Duplicate image detected (similarity: {sim:.2f}). Please upload unique photos.")
+
+        # 2. VLM Analysis (Slow/Expensive)
         print(f"Analyzing {file.filename}...", flush=True)
         json_str = state.vlm_client.analyze_image(str(temp_path), SYSTEM_PROMPT)
+        
         # Clean
         json_str = json_str.replace("```json", "").replace("```", "").strip()
         data = json.loads(json_str)
@@ -130,15 +155,19 @@ async def analyze_upload(file: UploadFile) -> PhotoProfile:
         # Add ID/Path
         data["id"] = f"upload_{safe_filename}"
         
-        # We set image_path to the SERVEABLE URL directly
-        # Since we mounted DATA_DIR to /temp_images
-        # And temp_path is inside DATA_DIR
         filename = temp_path.name
         data["image_path"] = f"/temp_images/{filename}"
+        data["embedding"] = embedding
+        
+        # Add to session (for this run)
+        if embedding:
+            state.session_embeddings.append((data["id"], embedding))
         
         print(f"DEBUG: Analyzed {file.filename} -> image_path set to: {data['image_path']}", flush=True)
         
         return PhotoProfile(**data)
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Analysis failed for {file.filename}: {e}", flush=True)
         # In a real app we might return an error or a dummy profile
@@ -152,6 +181,11 @@ async def search(
     positives: List[UploadFile] = File(...),
     negatives: List[UploadFile] = File(default=[])
 ):
+    # Clear session embeddings at start of search to allow "fresh" check
+    # Or keep them? User said "uploading identical photos". Maybe per request?
+    # Usually duplicates matter within the request.
+    state.session_embeddings = [] 
+    
     if not state.vlm_client:
         raise HTTPException(status_code=503, detail="VLM Client not available")
         
