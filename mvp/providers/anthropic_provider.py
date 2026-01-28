@@ -109,6 +109,46 @@ class AnthropicProvider(VLMProvider):
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
         
         raise last_exception or Exception("Failed to analyze image after retries")
+
+    async def generate_text(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate text using Claude."""
+        last_exception = None
+        for attempt in range(self.max_retries):
+            try:
+                # System prompt is a separate parameter in Claude API
+                response = await self.client.messages.create(
+                    model=self.model,
+                    max_tokens=kwargs.get("max_tokens", 2000),
+                    temperature=kwargs.get("temperature", 0.7),
+                    system=system_prompt if system_prompt else "",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ]
+                )
+                
+                # Extract text
+                raw_text = ""
+                for block in response.content:
+                    if block.type == "text":
+                        raw_text += block.text
+                
+                return raw_text
+                
+            except Exception as e:
+                print(f"Anthropic text generation attempt {attempt + 1}/{self.max_retries} failed: {e}")
+                last_exception = e
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        
+        raise last_exception or Exception("Failed to generate text after retries")
     
     async def parse_text_to_profile(self, text: str) -> PhotoProfile:
         """Parse Claude JSON response to PhotoProfile."""

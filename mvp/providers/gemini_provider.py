@@ -108,6 +108,32 @@ class GeminiProvider(VLMProvider):
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
         
         raise last_exception or Exception("Failed to analyze image after retries")
+
+    async def generate_text(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate text using Gemini."""
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        
+        last_exception = None
+        for attempt in range(self.max_retries):
+            try:
+                response = await asyncio.to_thread(
+                    self.model_instance.generate_content,
+                    full_prompt
+                )
+                return response.text
+                
+            except Exception as e:
+                print(f"Gemini text generation attempt {attempt + 1}/{self.max_retries} failed: {e}")
+                last_exception = e
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        
+        raise last_exception or Exception("Failed to generate text after retries")
     
     async def parse_text_to_profile(self, text: str) -> PhotoProfile:
         """Parse Gemini JSON response to PhotoProfile."""

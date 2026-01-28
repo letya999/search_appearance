@@ -142,10 +142,10 @@ class SearchSession(SQLModel):
 
 ---
 
-## 📋 Этап 4: Поиск по текстовому промпту
+## 📋 Этап 4: Поиск по текстовому промпту ✅
 
 ### 4.1 Text → Profile Parser
-- [ ] `mvp/text_search/prompt_parser.py`
+- [x] `mvp/text_search/prompt_parser.py`
   ```python
   async def parse_appearance_prompt(text: str) -> PhotoProfile:
       """
@@ -155,12 +155,12 @@ class SearchSession(SQLModel):
   ```
 
 ### 4.2 Fuzzy Matching
-- [ ] Синонимы атрибутов ("светлые волосы" = "blonde")
-- [ ] NLP извлечение сущностей
-- [ ] Confidence scoring для частичных совпадений
+- [x] Синонимы атрибутов (через LLM/Provider)
+- [x] NLP извлечение сущностей
+- [x] Confidence scoring для частичных совпадений
 
 ### 4.3 API endpoint
-- [ ] `POST /search/text`
+- [x] `POST /search/text`
   ```json
   {
     "prompt": "Высокий спортивный мужчина с темными волосами",
@@ -173,11 +173,11 @@ class SearchSession(SQLModel):
 
 ---
 
-## 📋 Этап 5: Генерация и поиск
+## 📋 Этап 5: Генерация и поиск ✅
 
 ### 5.1 Image Generators
-- [ ] `mvp/generators/base.py` — базовый класс
-- [ ] `dalle_generator.py` — DALL-E 3
+- [x] `mvp/generators/base.py` — базовый класс
+- [x] `dalle_generator.py` — DALL-E 3
 - [ ] `stability_generator.py` — Stable Diffusion XL
 - [ ] `flux_generator.py` — Flux via Replicate
 
@@ -194,7 +194,7 @@ async def generate_and_search(prompt: str, generator: str):
 ```
 
 ### 5.3 API endpoint
-- [ ] `POST /search/generate`
+- [x] `POST /search/generate`
 
 **Результат:** Описание → Генерация → Поиск в одном запросе.
 

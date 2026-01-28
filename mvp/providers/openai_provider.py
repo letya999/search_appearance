@@ -94,6 +94,39 @@ class OpenAIProvider(VLMProvider):
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
         
         raise last_exception or Exception("Failed to analyze image after retries")
+
+    async def generate_text(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """Generate text using OpenAI."""
+        last_exception = None
+        for attempt in range(self.max_retries):
+            try:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=kwargs.get("temperature", 0.7),
+                    max_tokens=kwargs.get("max_tokens", 2000),
+                    response_format=kwargs.get("response_format", None)
+                )
+                
+                return response.choices[0].message.content
+                
+            except Exception as e:
+                print(f"OpenAI text generation attempt {attempt + 1}/{self.max_retries} failed: {e}")
+                last_exception = e
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+        
+        raise last_exception or Exception("Failed to generate text after retries")
     
     async def parse_text_to_profile(self, text: str) -> PhotoProfile:
         """Parse OpenAI JSON response to PhotoProfile."""

@@ -87,7 +87,10 @@ async def lifespan(app: FastAPI):
     pass
 
 app = FastAPI(lifespan=lifespan)
+from mvp.api.routes.search import router as search_router
+
 app.include_router(collections_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
 
 # CORS
 app.add_middleware(

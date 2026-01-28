@@ -82,6 +82,26 @@ class VLMProvider(ABC):
             Exception: If analysis fails after all retries
         """
         pass
+
+    @abstractmethod
+    async def generate_text(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """
+        Generate text from a prompt (text-only mode).
+        
+        Args:
+            prompt: User prompt
+            system_prompt: Optional system prompt
+            **kwargs: Additional provider-specific parameters
+            
+        Returns:
+            Generated text response
+        """
+        pass
     
     @abstractmethod
     async def parse_text_to_profile(self, text: str) -> PhotoProfile:
