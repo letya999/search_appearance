@@ -4,11 +4,23 @@ from typing import Optional
 from openai import OpenAI
 
 class VLMClient:
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model: str = "qwen/qwen-2.5-vl-72b-instruct:free"):
-        # Defaulting to a high quality model on OpenRouter, but can be changed
-        self.api_key = api_key or os.environ.get("VLM_API_KEY")
-        self.base_url = base_url or os.environ.get("VLM_BASE_URL", "https://openrouter.ai/api/v1")
-        self.model = model
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model: Optional[str] = None):
+        self.api_key = api_key or os.environ.get("VLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        
+        # Determine provider based on key format if not explicitly set
+        is_openrouter = self.api_key and self.api_key.startswith("sk-or-")
+        is_openai = self.api_key and (self.api_key.startswith("sk-proj-") or self.api_key.startswith("sk-") and not is_openrouter)
+        
+        # Set defaults based on provider
+        default_base_url = "https://openrouter.ai/api/v1"
+        default_model = "qwen/qwen-2.5-vl-72b-instruct:free"
+        
+        if is_openai:
+            default_base_url = None # Let OpenAI SDK use default
+            default_model = "gpt-4o"
+            
+        self.base_url = base_url or os.environ.get("VLM_BASE_URL", default_base_url)
+        self.model = model or os.environ.get("VLM_MODEL", default_model)
         
         self.client = OpenAI(
             api_key=self.api_key,

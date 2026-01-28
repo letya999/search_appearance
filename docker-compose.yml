@@ -1,0 +1,29 @@
+# Docker Compose for Visual Search App
+services:
+  # Backend API
+  api:
+    build: .
+    ports:
+      - "8005:8000"
+    volumes:
+      - ./data:/app/data
+      - ./mvp:/app/mvp
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: unless-stopped
+
+  # Frontend UI
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    # Run dev server properly bound to 0.0.0.0 so host can access
+    command: sh -c "npm install && npm run dev -- --host"
+    ports:
+      - "5174:5173"
+    environment:
+      - VITE_API_URL=http://api:8000
+    depends_on:
+      - api

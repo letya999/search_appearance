@@ -1,139 +1,224 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-import shutil
 import os
-import uuid
-from mvp.storage.db import PhotoDatabase
+import json
+import asyncio
+from typing import List, Optional
+from pathlib import Path
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from mvp.schema.models import PhotoProfile
+from mvp.annotator.client import VLMClient
+from mvp.annotator.prompts import SYSTEM_PROMPT
 from mvp.search.aggregator import ProfileAggregator
 from mvp.search.ranker import Ranker
-from mvp.annotator.client import VLMClient
-from mvp.annotator.batch_process import process_file
-from mvp.schema.models import PhotoProfile
 
-app = FastAPI(title="Visual Dating Search API")
+# Configuration
+DATA_DIR = Path("data")
+METADATA_FILE = DATA_DIR / "wiki_1000_metadata.json"
+IMAGES_DIR = DATA_DIR / "raw_1000"
 
-# Initialize components
-# Ensure data directory exists
-os.makedirs("data/uploads", exist_ok=True)
-db = PhotoDatabase(db_path="data/db.json")
+# Global State
+class AppState:
+    db_profiles: List[PhotoProfile] = []
+    vlm_client: Optional[VLMClient] = None
+    ranker: Ranker = Ranker()
+    aggregator: ProfileAggregator = ProfileAggregator()
 
-# We defer VLM client init to when needed or keep global if it's lightweight (it is)
-try:
-    vlm_client = VLMClient()
-except Exception as e:
-    print(f"Warning: VLM Client not initialized (Env var missing?): {e}")
-    vlm_client = None
+state = AppState()
 
-aggregator = ProfileAggregator()
-ranker = Ranker()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Load DB and Init Client
+    print("Loading database...")
+    if METADATA_FILE.exists():
+        with open(METADATA_FILE, 'r') as f:
+            raw_data = json.load(f)
+            # Create PhotoProfile objects
+            # Handle potential partial data failures gently
+            valid_profiles = []
+            for item in raw_data:
+                try:
+                    # Fix image path to be served via URL if needed, 
+                    # but for now we keep absolute path for internal use, usually.
+                    # Actually, for the UI to show it, we need a filename we can serve.
+                    # Let's ensure 'image_path' is preserved or we extract filename.
+                    p = PhotoProfile(**item)
+                    valid_profiles.append(p)
+                except Exception as e:
+                    print(f"Skipping profile {item.get('id', '?')}: {e}")
+            
+            state.db_profiles = valid_profiles
+            print(f"Loaded {len(state.db_profiles)} profiles.")
+    else:
+        print("WARNING: Metadata file not found. Database is empty.")
 
-class SearchRequest(BaseModel):
-    positive_ids: List[str]
-    negative_ids: List[str] = []
-    limit: int = 20
-    weights: Dict[str, float] = None
-    hard_filters: Dict[str, Any] = None
-
-class SearchResponseItem(BaseModel):
-    id: str
-    score: float
-    image_path: str
-    attributes: Dict[str, Any] # Simplified attributes for frontend
-
-@app.post("/index-photo", response_model=PhotoProfile)
-async def index_photo(file: UploadFile = File(...)):
-    if not vlm_client:
-        raise HTTPException(status_code=503, detail="VLM Client not available")
-
-    # Save temp file
-    file_ext = os.path.splitext(file.filename)[1]
-    temp_filename = f"{uuid.uuid4()}{file_ext}"
-    temp_path = os.path.join("data/uploads", temp_filename)
-    
+    # Init VLM Client
     try:
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        # Analyze
-        # process_file expects client and path
-        # It returns a dict compatible with PhotoProfile
-        # It also generates a UUID for ID. We might want to use our temp_filename as a base or just use the one generated.
-        
-        # Note: process_file logic:
-        # profile_data = { "id": str(uuid.uuid4()), "image_path": absolute_path, ... }
-        
-        # We want to ensure image_path is accessible.
-        abs_path = os.path.abspath(temp_path)
-        
-        # We essentially re-implement process_file wrapper to ensure we control the path storage if needed,
-        # but calling it is fine.
-        profile_dict = process_file(vlm_client, abs_path)
-        
-        # Ensure ID is unique or track it.
-        profile = PhotoProfile(**profile_dict)
-        
-        # Save to DB
-        db.add_profile(profile)
-        
-        return profile
-
+        state.vlm_client = VLMClient()
+        print("VLM Client initialized.")
     except Exception as e:
-        # Cleanup if failed
-        if os.path.exists(temp_path):
-            # os.remove(temp_path) # Maybe keep for debugging?
-            pass
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"WARNING: VLM Client failed to init: {e}")
 
-@app.post("/search", response_model=List[SearchResponseItem])
-async def search_profiles(req: SearchRequest):
-    all_profiles = db.get_all_profiles()
-    
-    positives = [db.get_profile(pid) for pid in req.positive_ids if db.get_profile(pid)]
-    negatives = [db.get_profile(nid) for nid in req.negative_ids if db.get_profile(nid)]
-    
-    if not positives:
-         # If no positives, maybe return random or top rated? 
-         # For now error.
-         raise HTTPException(status_code=400, detail="At least one valid positive ID is required")
+    yield
+    # Shutdown
+    pass
 
-    target_profile = aggregator.build_target_profile(positives, negatives)
+app = FastAPI(lifespan=lifespan)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # For dev
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Static Files for Images
+# Mount /images -> data/raw_1000
+if IMAGES_DIR.exists():
+    app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
+
+# Mount /temp_images -> data (for uploads)
+if DATA_DIR.exists():
+    app.mount("/temp_images", StaticFiles(directory=DATA_DIR), name="temp_images")
+
+# --- Schemas ---
+
+import time
+
+class SearchResult(BaseModel):
+    profile: PhotoProfile
+    score: float
+    # We might want to add explanation text here later
     
-    negative_target_profile = None
-    if negatives:
-        negative_target_profile = aggregator.build_target_profile(negatives, [])
+class SearchResponse(BaseModel):
+    results: List[SearchResult]
+    analyzed_positives: List[PhotoProfile]
+    analyzed_negatives: List[PhotoProfile]
+    target_profile: PhotoProfile
+    execution_time: Optional[float] = None
+
+# --- Endpoints ---
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "db_size": len(state.db_profiles)}
+
+async def analyze_upload(file: UploadFile) -> PhotoProfile:
+    # Save temp file
+    # Ensure filename is safe
+    safe_filename = "".join([c for c in file.filename if c.isalnum() or c in "._-"])
+    temp_path = DATA_DIR / f"temp_{safe_filename}"
     
-    # Apply hard filters if any
-    candidates = all_profiles
-    if req.hard_filters:
-        candidates = ranker.filter_candidates(candidates, req.hard_filters)
+    with open(temp_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
         
-    # Score
+    try:
+        # Analyze
+        print(f"Analyzing {file.filename}...", flush=True)
+        json_str = state.vlm_client.analyze_image(str(temp_path), SYSTEM_PROMPT)
+        # Clean
+        json_str = json_str.replace("```json", "").replace("```", "").strip()
+        data = json.loads(json_str)
+        
+        # Add ID/Path
+        data["id"] = f"upload_{safe_filename}"
+        
+        # We set image_path to the SERVEABLE URL directly
+        # Since we mounted DATA_DIR to /temp_images
+        # And temp_path is inside DATA_DIR
+        filename = temp_path.name
+        data["image_path"] = f"/temp_images/{filename}"
+        
+        print(f"DEBUG: Analyzed {file.filename} -> image_path set to: {data['image_path']}", flush=True)
+        
+        return PhotoProfile(**data)
+    except Exception as e:
+        print(f"Analysis failed for {file.filename}: {e}", flush=True)
+        # In a real app we might return an error or a dummy profile
+        raise HTTPException(status_code=500, detail=f"VLM Analysis Failed: {e}")
+    finally:
+        # Cleanup temp? Maybe keep for debugging for now.
+        pass
+
+@app.post("/api/search", response_model=SearchResponse)
+async def search(
+    positives: List[UploadFile] = File(...),
+    negatives: List[UploadFile] = File(default=[])
+):
+    if not state.vlm_client:
+        raise HTTPException(status_code=503, detail="VLM Client not available")
+        
+    # 1. Analyze Uploads (Concurrently)
+    # Note: OpenAI client is sync by default unless we use AsyncOpenAI.
+    # The wrapper VLMClient uses sync OpenAI. Running in threadpool via asyncio.to_thread?
+    # For now, let's run sequential or simple loop to avoid complexity, 
+    # as we only have 10 max images.
+    
+    start_time = time.time()
+
+    analyzed_pos = []
+    for f in positives:
+        # Rewind file if needed? UploadFile is workable.
+        p = await analyze_upload(f)
+        analyzed_pos.append(p)
+        
+    analyzed_neg = []
+    for f in negatives:
+        if f.size > 0: # Check if empty file passed
+             p = await analyze_upload(f)
+             analyzed_neg.append(p)
+             
+    # 2. Build Target
+    target = state.aggregator.build_target_profile(analyzed_pos, analyzed_neg)
+    
+    # 3. Score Database
     scored_results = []
-    for cand in candidates:
-        if cand.id in req.positive_ids or cand.id in req.negative_ids:
-            continue
-            
-        score = ranker.score_candidate(target_profile, cand, weights=req.weights, negative_target=negative_target_profile)
-        scored_results.append((cand, score))
-        
-    # Sort
-    scored_results.sort(key=lambda x: x[1], reverse=True)
-    top_results = scored_results[:req.limit]
+    # No need to aggregated negatives again as target is already adjusted
     
-    # Format response
-    response = []
-    for p, s in top_results:
-        response.append(SearchResponseItem(
-            id=p.id,
-            score=s,
-            image_path=p.image_path,
-            attributes=p.model_dump()
-        ))
+    for candidate in state.db_profiles:
+        score = state.ranker.score_candidate(target, candidate)
+        scored_results.append((candidate, score))
         
-    return response
+    # 4. Sort and Cull
+    scored_results.sort(key=lambda x: x[1], reverse=True)
+    top_5 = scored_results[:5]
+    
+    # Format results
+    # We need to ensure the profile image_path is converted to a serve-able URL
+    formatted_results = []
+    for prof, score in top_5:
+        # Create a copy to not mutate DB state
+        p_copy = prof.model_copy()
+        
+        # FIX: Handle Windows paths on Linux (Docker)
+        # 10049200...jpg or C:\...\10049200...jpg
+        raw_path = str(p_copy.image_path)
+        filename = raw_path.replace("\\", "/").split("/")[-1]
+        
+        # Debugging
+        print(f"DEBUG: Processing path '{raw_path}' -> filename '{filename}'", flush=True)
+        
+        # Set to URL
+        p_copy.image_path = f"/images/{filename}"
+        formatted_results.append(SearchResult(profile=p_copy, score=score))
+        
+    execution_time = time.time() - start_time
 
-@app.get("/profiles", response_model=List[PhotoProfile])
-async def list_profiles(limit: int = 100):
-    profiles = db.get_all_profiles()
-    return profiles[:limit]
+    return SearchResponse(
+        results=formatted_results,
+        analyzed_positives=analyzed_pos,
+        analyzed_negatives=analyzed_neg,
+        target_profile=target,
+        execution_time=execution_time
+    )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("mvp.api.main:app", host="0.0.0.0", port=8000, reload=True)
