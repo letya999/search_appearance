@@ -1,0 +1,80 @@
+# VLM Provider Configurations
+# Priority: Higher number = higher priority in fallback chain
+
+providers:
+  openai:
+    enabled: true
+    # api_key: Set via OPENAI_API_KEY environment variable
+    base_url: null  # Uses OpenAI default
+    default_model: "gpt-4o"
+    max_retries: 3
+    timeout: 60
+    rate_limit_rpm: 500  # Tier 1 default
+    priority: 100
+    
+  anthropic:
+    enabled: true
+    # api_key: Set via ANTHROPIC_API_KEY environment variable
+    base_url: null  # Uses Anthropic default
+    default_model: "claude-3-5-sonnet-20241022"
+    max_retries: 3
+    timeout: 60
+    rate_limit_rpm: 50  # Tier 1 default
+    priority: 90
+    
+  gemini:
+    enabled: true
+    # api_key: Set via GOOGLE_API_KEY environment variable
+    base_url: null  # Uses Google default
+    default_model: "gemini-2.0-flash-exp"
+    max_retries: 3
+    timeout: 60
+    rate_limit_rpm: 60  # Free tier
+    priority: 80
+    
+  openrouter:
+    enabled: true
+    # api_key: Set via OPENROUTER_API_KEY environment variable
+    base_url: "https://openrouter.ai/api/v1"
+    default_model: "qwen/qwen-2.5-vl-72b-instruct:free"
+    max_retries: 3
+    timeout: 60
+    rate_limit_rpm: 20  # Free tier
+    priority: 70
+    
+  ollama:
+    enabled: false  # Disabled by default (requires local setup)
+    api_key: "not-needed"  # Ollama doesn't need API key
+    base_url: "http://localhost:11434/v1"
+    default_model: "llava:13b"
+    max_retries: 2
+    timeout: 120  # Local models can be slower
+    rate_limit_rpm: null  # No rate limit for local
+    priority: 60
+
+# Search Configuration
+search:
+  default_top_k: 20
+  min_similarity_threshold: 0.0
+  duplicate_threshold: 0.9
+  
+  # Ranking weights
+  weight_exact_match: 2.0
+  weight_partial_match: 1.0
+  weight_negative_penalty: -1.5
+
+# Database Configuration
+database:
+  sqlite_path: "data/search_appearance.db"
+  lancedb_path: "data/lancedb"
+  
+  # Redis caching (optional)
+  redis_enabled: false
+  redis_url: "redis://localhost:6379"
+  redis_ttl: 3600
+
+# Embedding Configuration
+embedding:
+  model_name: "openai/clip-vit-base-patch32"
+  device: "cpu"
+  batch_size: 32

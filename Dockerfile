@@ -12,6 +12,7 @@ COPY pyproject.toml .
 COPY README.md .
 COPY mvp/ mvp/
 COPY data/ data/
+COPY config/ config/
 
 # Install dependencies
 RUN pip install --no-cache-dir .

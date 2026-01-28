@@ -8,8 +8,9 @@ services:
     volumes:
       - ./data:/app/data
       - ./mvp:/app/mvp
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ./config:/app/config
+    env_file:
+      - .env
     restart: unless-stopped
 
   # Frontend UI
