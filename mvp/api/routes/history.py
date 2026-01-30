@@ -12,7 +12,8 @@ router = APIRouter(prefix="/user", tags=["user"])
 def get_search_history(session: Session = Depends(get_session)):
     user_id = UUID(get_current_user_id())
     stmt = select(SearchSession).where(SearchSession.user_id == user_id).order_by(SearchSession.started_at.desc())
-    return session.exec(stmt).all()
+    results = session.exec(stmt).all()
+    return results
 
 @router.get("/saved", response_model=List[SavedExample])
 def get_saved_examples(session: Session = Depends(get_session)):

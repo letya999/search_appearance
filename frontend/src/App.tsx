@@ -624,7 +624,7 @@ function App() {
                                         Match Session
                                     </div>
                                     <div className="text-xs text-gray-500">
-                                        Found matches
+                                        Found {sess.results ? sess.results.length : 0} matches
                                     </div>
                                 </div>
                             ))

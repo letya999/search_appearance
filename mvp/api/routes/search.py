@@ -75,10 +75,32 @@ async def search_by_text(
     if not photos:
         if sess_id:
             await manager.send_update(sess_id, {"stage": "completed", "progress": 1.0, "results_count": 0})
+            
+            # Save History (Empty Result)
+            try:
+                user_id = UUID(get_current_user_id())
+                sess_uuid = UUID(sess_id)
+                new_session = SearchSession(
+                    id=sess_uuid,
+                    user_id=user_id,
+                    collection_id=request.collection_id,
+                    positives=[request.prompt],
+                    negatives=[],
+                    started_at=datetime.utcnow(),
+                    completed_at=datetime.utcnow(),
+                    results=[]
+                )
+                session.add(new_session)
+                session.commit()
+            except Exception as e:
+                print(f"ERROR: Failed to save empty history: {e}", flush=True)
+
         # Fix: Frontend expects "target_profile" and serialized Enums
         return {
             "results": [], 
-            "target_profile": target_profile.model_dump(mode='json') if hasattr(target_profile, 'model_dump') else target_profile
+            "target_profile": target_profile.model_dump(mode='json') if hasattr(target_profile, 'model_dump') else target_profile,
+            "analyzed_positives": [],
+            "analyzed_negatives": []
         }
     
     if sess_id:
@@ -157,7 +179,7 @@ async def search_by_text(
             session.add(new_session)
             session.commit()
         except Exception as e:
-            print(f"Failed to save text search history: {e}")
+            print(f"ERROR: Failed to save text search history: {e}", flush=True)
     
     return SearchResponse(
         results=results,
@@ -320,7 +342,7 @@ async def generate_and_search(
             session.add(new_session)
             session.commit()
         except Exception as e:
-            print(f"Failed to save generate search history: {e}")
+            print(f"ERROR: Failed to save generate search history: {e}", flush=True)
 
     return SearchResponse(
         results=results,
