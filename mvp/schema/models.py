@@ -45,8 +45,8 @@ class VibeAttributesModel(BaseModel):
     vibe: Optional[AttributeScore[Vibe]] = None
 
 class PhotoProfile(BaseModel):
-    id: str
-    image_path: str
+    id: Optional[str] = Field(default=None)
+    image_path: Optional[str] = Field(default=None)
     embedding: Optional[List[float]] = Field(default=None, description="Vector embedding of the image")
     basic: BasicAttributesModel = Field(default_factory=BasicAttributesModel)
     face: FaceAttributesModel = Field(default_factory=FaceAttributesModel)

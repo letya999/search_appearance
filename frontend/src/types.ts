@@ -36,4 +36,28 @@ export interface SearchResponse {
     analyzed_negatives: PhotoProfile[];
     target_profile: PhotoProfile;
     execution_time?: number;
+    generated_image?: string;
+}
+
+export interface SearchStage {
+    name: string;
+    status: string; // pending, running, completed, error
+    progress: number;
+    message?: string;
+}
+
+export interface SearchSession {
+    id: string;
+    started_at: string;
+    completed_at?: string;
+    stages: SearchStage[];
+    results: any[]; // simplified for list view
+}
+
+export interface SavedExample {
+    id: string;
+    image_path: string;
+    tags: string[];
+    created_at: string;
+    profile: PhotoProfile;
 }

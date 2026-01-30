@@ -13,10 +13,16 @@ def get_current_user_id():
     # Placeholder UUID for development
     return "00000000-0000-0000-0000-000000000000" 
 
-@router.post("/", response_model=PhotoCollection)
+@router.post("", response_model=PhotoCollection)
 def create_collection(collection: PhotoCollection, session: Session = Depends(get_session)):
     # Verify user exists or create default if not
     user_id = collection.user_id
+    
+    # Ensure user_id is a UUID object (SQLModel sometimes leaves it as string)
+    if isinstance(user_id, str):
+        user_id = UUID(user_id)
+        collection.user_id = user_id # Update the object too
+
     user = session.get(UserModel, user_id)
     if not user:
         # Create default user if it's the specific placeholder ID
@@ -33,7 +39,7 @@ def create_collection(collection: PhotoCollection, session: Session = Depends(ge
     session.refresh(collection)
     return collection
 
-@router.get("/", response_model=List[PhotoCollection])
+@router.get("", response_model=List[PhotoCollection])
 def list_collections(user_id: UUID = None, session: Session = Depends(get_session)):
     if not user_id:
         user_id = UUID(get_current_user_id())

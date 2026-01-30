@@ -31,6 +31,7 @@ class StoredPhoto(SQLModel, table=True):
     collection_id: UUID = Field(foreign_key="photocollection.id")
     image_path: str
     profile: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))  # Serialized PhotoProfile
+    phash: Optional[str] = None # Perceptual hash for deduplication
     embedding: Optional[bytes] = None  # Serialized numpy array
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
@@ -48,3 +49,12 @@ class SearchSession(SQLModel, table=True):
     results: List[Dict[str, Any]] = Field(default=[], sa_column=Column(JSON)) # Serialized results
     
     user: Optional[User] = Relationship(back_populates="sessions")
+
+class SavedExample(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="user.id")
+    image_path: str
+    tags: List[str] = Field(default=[], sa_column=Column(JSON))
+    profile: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+

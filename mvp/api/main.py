@@ -15,29 +15,16 @@ from mvp.annotator.client import VLMClient
 from mvp.annotator.prompts import SYSTEM_PROMPT
 from mvp.search.aggregator import ProfileAggregator
 from mvp.search.ranker import Ranker
-from mvp.search.ranker import Ranker
 from mvp.core.embedder import ImageEmbedder
 
 from mvp.storage.database import create_db_and_tables
 from mvp.api.routes.collections import router as collections_router
+from mvp.core.state import state
 
 # Configuration
 DATA_DIR = Path("data")
 METADATA_FILE = DATA_DIR / "wiki_1000_metadata.json"
 IMAGES_DIR = DATA_DIR / "raw_1000"
-
-# Global State
-class AppState:
-    db_profiles: List[PhotoProfile] = []
-    vlm_client: Optional[VLMClient] = None
-    ranker: Ranker = Ranker()
-    aggregator: ProfileAggregator = ProfileAggregator()
-    embedder: Optional[ImageEmbedder] = None
-    # Store session/active embeddings to prevent duplicates.
-    # List of (id, embedding)
-    session_embeddings: List[tuple] = []
-
-state = AppState()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -45,26 +32,99 @@ async def lifespan(app: FastAPI):
     print("Initializing Database...")
     create_db_and_tables()
     
+    # Imports for DB seeding
+    from sqlmodel import Session, select
+    from mvp.storage.database import engine, get_session
+    from mvp.storage.models import PhotoCollection, StoredPhoto, SearchSession
+    from uuid import UUID
+    
     print("Loading database...")
+    valid_profiles = []
+    
     if METADATA_FILE.exists():
-        with open(METADATA_FILE, 'r') as f:
+        with open(METADATA_FILE, 'r', encoding='utf-8') as f:
             raw_data = json.load(f)
-            # Create PhotoProfile objects
-            # Handle potential partial data failures gently
-            valid_profiles = []
+            
+            # 1. Load into Memory (for Image Search)
             for item in raw_data:
                 try:
-                    # Fix image path to be served via URL if needed, 
-                    # but for now we keep absolute path for internal use, usually.
-                    # Actually, for the UI to show it, we need a filename we can serve.
-                    # Let's ensure 'image_path' is preserved or we extract filename.
                     p = PhotoProfile(**item)
                     valid_profiles.append(p)
                 except Exception as e:
                     print(f"Skipping profile {item.get('id', '?')}: {e}")
             
             state.db_profiles = valid_profiles
-            print(f"Loaded {len(state.db_profiles)} profiles.")
+            print(f"Loaded {len(state.db_profiles)} profiles into memory.")
+            
+            # 2. Sync to SQL DB (for Text Search)
+            with Session(engine) as session:
+                photo_count = session.exec(select(StoredPhoto)).all()
+                if len(photo_count) == 0:
+                    print("SQL Database is empty. Seeding from metadata...")
+                    
+                    # Create Collection
+                    col = PhotoCollection(
+                        user_id=UUID("00000000-0000-0000-0000-000000000000"),
+                        name="Wiki 1000",
+                        description="Auto-imported from metadata",
+                        photo_count=0
+                    )
+                    session.add(col)
+                    session.commit()
+                    session.refresh(col)
+                    
+                    count = 0
+                    for item in raw_data:
+                        # Construct StoredPhoto
+                        # fix path sep
+                        img_path = item.get("image_path", "").replace("\\", "/")
+                        
+                        # Only add if file exists? Or just trust metadata? 
+                        # User wants fallback "simply take from folder".
+                        # Let's trust metadata path but ensure filename is correct relative to our /images mount?
+                        # Actually text search route reads p.image_path.
+                        # Frontend expects /images/filename.
+                        # The raw_data has absolute paths e.g. C:\...\10049200.jpg
+                        # We should probably store them as is, or fix them.
+                        # But wait, search.py route returns `p.image_path`.
+                        # If we store absolute path, frontend gets absolute path which it can't load.
+                        # We should probably normalize existing profiles too if we can.
+                        # But for SQL, let's store absolute path as that's what backend uses to open file.
+                        
+                        # Fix UUID/ID
+                        try:
+                            # PhotoProfile might have 'id' as string, StoredPhoto uses uuid?
+                             # StoredPhoto model: id is UUID.
+                            p_id = item.get("id")
+                            if not p_id: continue
+                            
+                            # Prepare profile dict (excluding id/image_path)
+                            profile_dict = {
+                                "basic": item.get("basic"),
+                                "face": item.get("face"),
+                                "hair": item.get("hair"),
+                                "extra": item.get("extra"),
+                                "vibe": item.get("vibe")
+                            }
+                            
+                            photo = StoredPhoto(
+                                id=UUID(p_id),
+                                collection_id=col.id,
+                                image_path=img_path,
+                                profile=profile_dict
+                            )
+                            session.add(photo)
+                            count += 1
+                        except Exception as e:
+                            print(f"Failed to seed photo {item.get('id')}: {e}")
+                            
+                    col.photo_count = count
+                    session.add(col)
+                    session.commit()
+                    print(f"Seeded {count} photos into SQL Database.")
+                else:
+                    print(f"SQL Database has {len(photo_count)} photos. Skipping seed.")
+
     else:
         print("WARNING: Metadata file not found. Database is empty.")
 
@@ -75,22 +135,64 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"WARNING: VLM Client failed to init: {e}")
 
-    # Init Embedder
+    # Init Embedder with warmup
     try:
+        print("Initializing Image Embedder (loading CLIP model)...")
         state.embedder = ImageEmbedder()
-        print("Image Embedder initialized.")
+        
+        # Warmup: encode a dummy image to load model into memory
+        print("Warming up CLIP model...")
+        import tempfile
+        from PIL import Image
+        import numpy as np
+        
+        # Create a dummy 224x224 RGB image
+        dummy_img = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+            dummy_img.save(tmp.name)
+            # Run encoding to warmup
+            _ = state.embedder.encode_image(tmp.name)
+            os.unlink(tmp.name)
+        
+        print("Image Embedder initialized and warmed up.")
     except Exception as e:
         print(f"WARNING: Embedder failed to init: {e}")
+        
+    # Init Ranker
+    try:
+        state.ranker = Ranker()
+        print("Ranker initialized.")
+    except Exception as e:
+        print(f"WARNING: Ranker failed to init: {e}")
+
+    # Init Aggregator
+    try:
+        state.aggregator = ProfileAggregator()
+        print("ProfileAggregator initialized.")
+    except Exception as e:
+        print(f"WARNING: Aggregator failed to init: {e}")
+
+    # Mark as ready
+    state.ready = True
+    print("✓ API is ready to accept requests!")
 
     yield
     # Shutdown
-    pass
+    state.ready = False
+
 
 app = FastAPI(lifespan=lifespan)
 from mvp.api.routes.search import router as search_router
+from mvp.api.websocket import router as ws_router
+
+from mvp.api.routes.history import router as history_router
+from mvp.api.routes.batch import router as batch_router
 
 app.include_router(collections_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
+app.include_router(ws_router)
+app.include_router(history_router, prefix="/api")
+app.include_router(batch_router, prefix="/api")
 
 # CORS
 app.add_middleware(
@@ -112,27 +214,28 @@ if DATA_DIR.exists():
 
 # --- Schemas ---
 
-import time
+# --- Schemas ---
 
-class SearchResult(BaseModel):
-    profile: PhotoProfile
-    score: float
-    # We might want to add explanation text here later
-    
-class SearchResponse(BaseModel):
-    results: List[SearchResult]
-    analyzed_positives: List[PhotoProfile]
-    analyzed_negatives: List[PhotoProfile]
-    target_profile: PhotoProfile
-    execution_time: Optional[float] = None
+import time
+from datetime import datetime
+from sqlmodel import Session, select
+from fastapi import Depends
+from mvp.storage.database import get_session
+from mvp.storage.models import SearchSession, PhotoCollection
+from mvp.api.routes.collections import get_current_user_id
+from mvp.api.schemas import SearchResponse, SearchResult
 
 # --- Endpoints ---
 
-@app.get("/health")
+@app.get("/api/health")
 def health():
-    return {"status": "ok", "db_size": len(state.db_profiles)}
+    return {
+        "status": "ok" if state.ready else "initializing",
+        "ready": state.ready,
+        "db_size": len(state.db_profiles)
+    }
 
-async def analyze_upload(file: UploadFile) -> PhotoProfile:
+async def analyze_upload(file: UploadFile, session_embeddings: List) -> PhotoProfile:
     # Save temp file
     # Ensure filename is safe
     safe_filename = "".join([c for c in file.filename if c.isalnum() or c in "._-"])
@@ -149,7 +252,7 @@ async def analyze_upload(file: UploadFile) -> PhotoProfile:
             embedding = state.embedder.encode_image(str(temp_path))
             
             if embedding:
-                for existing_id, existing_emb in state.session_embeddings:
+                for existing_id, existing_emb in session_embeddings:
                     sim = state.embedder.cosine_similarity(embedding, existing_emb)
                     if sim > 0.9:
                         print(f"Duplicate detected: {file.filename} is similar to {existing_id} ({sim:.4f})")
@@ -172,7 +275,7 @@ async def analyze_upload(file: UploadFile) -> PhotoProfile:
         
         # Add to session (for this run)
         if embedding:
-            state.session_embeddings.append((data["id"], embedding))
+            session_embeddings.append((data["id"], embedding))
         
         print(f"DEBUG: Analyzed {file.filename} -> image_path set to: {data['image_path']}", flush=True)
         
@@ -190,16 +293,23 @@ async def analyze_upload(file: UploadFile) -> PhotoProfile:
 @app.post("/api/search", response_model=SearchResponse)
 async def search(
     positives: List[UploadFile] = File(...),
-    negatives: List[UploadFile] = File(default=[])
+    negatives: List[UploadFile] = File(default=[]),
+    session_id: Optional[str] = Form(None),
+    db_session: Session = Depends(get_session)
 ):
-    # Clear session embeddings at start of search to allow "fresh" check
-    # Or keep them? User said "uploading identical photos". Maybe per request?
-    # Usually duplicates matter within the request.
-    state.session_embeddings = [] 
+    from mvp.api.websocket import manager
+    
+    # Local session embeddings for this request to detect duplicates within the batch
+    local_session_embeddings = [] 
     
     if not state.vlm_client:
+        if session_id:
+             await manager.send_update(session_id, {"stage": "error", "message": "VLM Client not available"})
         raise HTTPException(status_code=503, detail="VLM Client not available")
-        
+    
+    if session_id:
+        await manager.send_update(session_id, {"stage": "analyzing", "progress": 0.05, "message": f"Analyzing {len(positives) + len(negatives)} images..."})
+
     # 1. Analyze Uploads (Concurrently)
     # Note: OpenAI client is sync by default unless we use AsyncOpenAI.
     # The wrapper VLMClient uses sync OpenAI. Running in threadpool via asyncio.to_thread?
@@ -207,30 +317,63 @@ async def search(
     # as we only have 10 max images.
     
     start_time = time.time()
+    total_files = len(positives) + len(negatives)
+    processed_count = 0
 
     analyzed_pos = []
     for f in positives:
-        # Rewind file if needed? UploadFile is workable.
-        p = await analyze_upload(f)
-        analyzed_pos.append(p)
+        try:
+             # Rewind file if needed? UploadFile is workable.
+             p = await analyze_upload(f, local_session_embeddings)
+             analyzed_pos.append(p)
+        except Exception as e:
+             print(f"Error analyzing {f.filename}: {e}")
         
+        processed_count += 1
+        if session_id:
+             await manager.send_update(session_id, {"stage": "analyzing", "progress": 0.05 + (0.8 * (processed_count / total_files)), "message": f"Analyzed {processed_count}/{total_files}..."})
+
     analyzed_neg = []
     for f in negatives:
         if f.size > 0: # Check if empty file passed
-             p = await analyze_upload(f)
-             analyzed_neg.append(p)
+             try:
+                 p = await analyze_upload(f, local_session_embeddings)
+                 analyzed_neg.append(p)
+             except Exception as e:
+                 print(f"Error analyzing {f.filename}: {e}")
              
+             processed_count += 1
+             if session_id:
+                 await manager.send_update(session_id, {"stage": "analyzing", "progress": 0.05 + (0.8 * (processed_count / total_files))})
+
+    if session_id:
+        await manager.send_update(session_id, {"stage": "analyzing", "progress": 1.0, "status": "completed"})
+        await manager.send_update(session_id, {"stage": "ranking", "progress": 0.0, "message": "Ranking profiles..."})
+
     # 2. Build Target
+    if not state.aggregator:
+         state.aggregator = ProfileAggregator()
     target = state.aggregator.build_target_profile(analyzed_pos, analyzed_neg)
     
     # 3. Score Database
     scored_results = []
     # No need to aggregated negatives again as target is already adjusted
     
-    for candidate in state.db_profiles:
+    if not state.ranker:
+         # Fallback
+         state.ranker = Ranker()
+    
+    candidate_count = len(state.db_profiles)
+    for i, candidate in enumerate(state.db_profiles):
         score = state.ranker.score_candidate(target, candidate)
         scored_results.append((candidate, score))
         
+        if session_id and i % 50 == 0 and candidate_count > 0:
+             await manager.send_update(session_id, {"stage": "ranking", "progress": (i / candidate_count)})
+        
+    if session_id:
+        await manager.send_update(session_id, {"stage": "ranking", "progress": 1.0, "status": "completed"})
+
     # 4. Sort and Cull
     scored_results.sort(key=lambda x: x[1], reverse=True)
     top_5 = scored_results[:5]
@@ -255,6 +398,41 @@ async def search(
         formatted_results.append(SearchResult(profile=p_copy, score=score))
         
     execution_time = time.time() - start_time
+    
+    if session_id:
+        await manager.send_update(session_id, {"stage": "completed", "progress": 1.0, "results_count": len(formatted_results)})
+
+    # NEW: Save History
+    try:
+        user_id = UUID(get_current_user_id())
+        
+        # Determine collection (default to first one)
+        col = db_session.exec(select(PhotoCollection).where(PhotoCollection.user_id == user_id)).first()
+        
+        if col and session_id:
+             # Ensure session ID is valid UUID
+             try:
+                 sess_uuid = UUID(session_id)
+                 
+                 # Check if exists (should not, but safe check)
+                 existing = db_session.get(SearchSession, sess_uuid)
+                 if not existing:
+                     new_session = SearchSession(
+                         id=sess_uuid,
+                         user_id=user_id,
+                         collection_id=col.id,
+                         positives=[p.filename for p in positives],
+                         negatives=[n.filename for n in negatives],
+                         started_at=datetime.utcnow(), # Approximate start
+                         completed_at=datetime.utcnow(),
+                         results=[{"id": str(r.profile.id), "score": r.score} for r in formatted_results]
+                     )
+                     db_session.add(new_session)
+                     db_session.commit()
+             except ValueError:
+                 print(f"Invalid session ID format: {session_id}")
+    except Exception as e:
+        print(f"Failed to save history: {e}")
 
     return SearchResponse(
         results=formatted_results,
