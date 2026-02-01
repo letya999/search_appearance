@@ -396,7 +396,7 @@ function App() {
         ws.onmessage = (event) => {
             try {
                 const update = JSON.parse(event.data);
-                console.log("WS Update:", update);
+
                 setSearchStages(prev => {
                     const newStages = [...prev];
                     // If stage exists, update it. If not, push new.

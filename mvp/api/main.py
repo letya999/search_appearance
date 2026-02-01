@@ -18,7 +18,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import datetime
+
 
 from mvp.schema.models import PhotoProfile
 from mvp.annotator.client import VLMClient
@@ -266,9 +266,7 @@ if IMAGES_DIR.exists():
 if DATA_DIR.exists():
     app.mount("/temp_images", StaticFiles(directory=DATA_DIR), name="temp_images")
 
-# --- Schemas ---
 
-# --- Schemas ---
 
 import time
 from datetime import datetime
@@ -321,7 +319,7 @@ async def analyze_upload(file: UploadFile, session_embeddings: List, session_fac
                 print(f"DEBUG: Checking {file.filename} against {len(session_embeddings)} existing session items.", flush=True)
                 for existing_id, existing_emb in session_embeddings:
                     sim = state.embedder.cosine_similarity(embedding, existing_emb)
-                    print(f"DEBUG: Sim({file.filename}, {existing_id}) = {sim}", flush=True)
+
                     if sim > 0.85: # Strengthened from 0.9 to 0.85 for stricter duplicate/same-person check
                         print(f"Duplicate/Same person detected: {file.filename} is similar to {existing_id} (similarity: {sim:.4f})")
                         raise HTTPException(status_code=400, detail=f"Duplicate or same person detected (similarity: {sim:.2f}). Please upload unique photos of different people/angles.")
@@ -336,7 +334,7 @@ async def analyze_upload(file: UploadFile, session_embeddings: List, session_fac
                  print(f"DEBUG: Face detected in {file.filename}. Checking against {len(session_face_embeddings)} faces.", flush=True)
                  for existing_id, existing_face_emb in session_face_embeddings:
                      is_match, dist = state.face_verifier.is_match(face_embedding, existing_face_emb, threshold=0.6)
-                     print(f"DEBUG: FaceDist({file.filename}, {existing_id}) = {dist:.4f}", flush=True)
+
                      
                      if is_match:
                           print(f"Duplicate Face detected: {file.filename} matches {existing_id} (dist: {dist:.4f})")

@@ -3,6 +3,10 @@ name = "search-appearance"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
+authors = [
+    {name = "Artem Letyushev", email = "artemletyushev@example.com"},
+]
+license = {text = "MIT"}
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.128.0",
