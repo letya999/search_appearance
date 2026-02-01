@@ -11,6 +11,8 @@ services:
       - ./config:/app/config
     env_file:
       - .env
+    environment:
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
 
   # Frontend UI

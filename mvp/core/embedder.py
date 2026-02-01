@@ -16,6 +16,18 @@ class ImageEmbedder:
         if SentenceTransformer:
             try:
                 logger.info(f"Loading embedding model: {model_name}...")
+                
+                # Suppress verbose logs
+                logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+                logging.getLogger("transformers").setLevel(logging.ERROR)
+                logging.getLogger("accelerate").setLevel(logging.ERROR)
+                
+                try:
+                    from transformers import logging as tr_logging
+                    tr_logging.set_verbosity_error()
+                except ImportError:
+                    pass
+
                 self.model = SentenceTransformer(model_name)
                 logger.info("Embedding model loaded successfully.")
             except Exception as e:

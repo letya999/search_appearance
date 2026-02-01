@@ -1,6 +1,6 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Upload, X, Search, Activity, Zap, Shield, User, FolderUp, FileDown, History, RefreshCw, BarChart, MessageSquare, Wand2 } from 'lucide-react';
+import { Upload, X, Search, Activity, Zap, Shield, User, FolderUp, FileDown, History, RefreshCw, BarChart, MessageSquare, Wand2, AlertCircle } from 'lucide-react';
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer } from 'recharts';
 import { SearchResponse, PhotoProfile, SearchSession, SearchStage } from './types';
 
@@ -239,6 +239,11 @@ const BatchUploadModal = ({ onClose }: { onClose: () => void }) => {
     );
 };
 
+// Helper: Euclidean Distance
+const euclideanDistance = (a: number[], b: number[]) => {
+    return Math.sqrt(a.reduce((acc, val, i) => acc + Math.pow(val - b[i], 2), 0));
+};
+
 // --- Main App ---
 
 function App() {
@@ -249,7 +254,12 @@ function App() {
     const [selectedProfile, setSelectedProfile] = useState<PhotoProfile | null>(null);
     const [viewingTarget, setViewingTarget] = useState(false);
 
+    // Embeddings Cache for Duplicate Detection (Client-Side)
+    const embeddingsRef = useRef(new Map<string, number[]>());
+
+
     // New State for Features
+    const [error, setError] = useState<string | null>(null);
     const [searchStages, setSearchStages] = useState<SearchStage[]>([]);
     const [showBatchUpload, setShowBatchUpload] = useState(false);
     const [history, setHistory] = useState<SearchSession[]>([]);
@@ -347,6 +357,7 @@ function App() {
         if (posFiles.length === 0) return alert("Please upload at least 1 positive photo.");
 
         setLoading(true);
+        setError(null);
         setSearchStages([]);
 
         // Generate Session ID
@@ -427,6 +438,8 @@ function App() {
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
                 const errMsg = typeof errData.detail === 'object' ? JSON.stringify(errData.detail) : (errData.detail || res.statusText);
+                setError(errMsg);
+                alert(errMsg); // Force visibility
                 throw new Error(errMsg);
             }
             const json = await res.json();
@@ -437,7 +450,9 @@ function App() {
             // setHistory(prev => [ ...prev, { id: sessionId, ... } ])
         } catch (e: any) {
             console.error(e);
-            alert(e.message || "Search failed. Check console.");
+            const msg = e.message || "Search failed.";
+            setError(msg);
+            alert(msg); // Force visibility
         } finally {
             setLoading(false);
             ws.close();
@@ -573,6 +588,7 @@ function App() {
         setData(null);
         setPosFiles([]);
         setNegFiles([]);
+        embeddingsRef.current.clear();
         localStorage.removeItem('searchResults');
     };
 
@@ -699,6 +715,14 @@ function App() {
 
                     {/* Progress Bar */}
                     {loading && <SearchProgressBar stages={searchStages} />}
+
+                    {/* Error Banner */}
+                    {error && (
+                        <div className="p-4 mb-4 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 animate-pulse flex items-center gap-2">
+                            <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                            <span className="text-sm font-bold">{error}</span>
+                        </div>
+                    )}
 
                     {data ? (
                         <div className="space-y-6 animate-fade-in">
@@ -842,7 +866,49 @@ function App() {
                                     <DropZone
                                         title="Target Vibe"
                                         files={posFiles}
-                                        onDrop={(accepted: File[]) => setPosFiles([...posFiles, ...accepted])}
+                                        onDrop={async (accepted: File[]) => {
+                                            // 1. Filter exact duplicates (Name/Size)
+                                            const unique = accepted.filter(f => !posFiles.some(p => p.name === f.name && p.size === f.size));
+                                            if (unique.length < accepted.length) alert("Duplicate photos (exact name) were ignored.");
+
+                                            // 2. Validate Semantically
+                                            const validated: File[] = [];
+                                            for (const file of unique) {
+                                                const formData = new FormData();
+                                                formData.append('file', file);
+                                                try {
+                                                    const res = await fetch('/api/validate/face', { method: 'POST', body: formData });
+                                                    const json = await res.json();
+
+                                                    if (json.status === 'ok' && json.embedding) {
+                                                        let isDuplicate = false;
+                                                        // Check against STORED embeddings
+                                                        for (const [key, emb] of embeddingsRef.current.entries()) {
+                                                            const dist = euclideanDistance(json.embedding, emb);
+                                                            if (dist < 0.6) {
+                                                                alert(`Duplicate person detected in ${file.name}! (Distance: ${dist.toFixed(2)})`);
+                                                                isDuplicate = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                        if (!isDuplicate) {
+                                                            embeddingsRef.current.set(`${file.name}-${file.size}`, json.embedding);
+                                                            validated.push(file);
+                                                        }
+                                                    } else {
+                                                        // Fallback: allow if no face or error
+                                                        validated.push(file);
+                                                    }
+                                                } catch (e) {
+                                                    console.error("Validation error", e);
+                                                    validated.push(file);
+                                                }
+                                            }
+
+                                            if (validated.length > 0) {
+                                                setPosFiles(prev => [...prev, ...validated]);
+                                            }
+                                        }}
                                         onRemove={(i: number) => setPosFiles(posFiles.filter((_, idx) => idx !== i))}
                                         colorClass="border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.1)]"
                                     />
@@ -850,7 +916,11 @@ function App() {
                                     <DropZone
                                         title="Exclude Traits"
                                         files={negFiles}
-                                        onDrop={(accepted: File[]) => setNegFiles([...negFiles, ...accepted])}
+                                        onDrop={(accepted: File[]) => {
+                                            const unique = accepted.filter(f => !negFiles.some(p => p.name === f.name && p.size === f.size));
+                                            if (unique.length < accepted.length) alert("Duplicate photos were ignored.");
+                                            setNegFiles([...negFiles, ...unique]);
+                                        }}
                                         onRemove={(i: number) => setNegFiles(negFiles.filter((_, idx) => idx !== i))}
                                         colorClass="border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.1)]"
                                     />
